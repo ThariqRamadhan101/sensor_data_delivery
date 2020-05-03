@@ -3,6 +3,10 @@
 #include "ArduinoJson.h"
 #include "SPIFFS.h"
 #include <TimeLib.h>
+#include <ArduinoJWT.h>
+#include <sha256.h>
+
+ArduinoJWT jwt = ArduinoJWT("bakuretsu");
 
 #define CONNECT 0
 #define REGISTRATION 1
@@ -17,6 +21,8 @@ const char* password =  "";
 boolean ssidFlag = true;
 boolean passFlag = false;
 
+boolean credFlag = false;
+String credential = "";
 boolean sensorFlag = false;
 String sensorName = "";
 
@@ -84,10 +90,14 @@ void loop() {
         password = inputSerial.c_str();
         ssidFlag = false;
         passFlag = false;
+        credFlag = true;
+      } else if ((state == REGISTRATION) && (credFlag)) {
+        credential = inputSerial;
+        credFlag = false;
         sensorFlag = true;
       } else if ((state == REGISTRATION) && (sensorFlag)) {
-        sensorFlag = false;
         sensorName = inputSerial;
+        sensorFlag = false;
       } else if ((state == HISTORY) && (hisFlag)) {
         hisFlag = false;
         n = inputSerial.toInt();
@@ -158,27 +168,38 @@ void fsm() {
       }
       break;
     case REGISTRATION:
-
+      if (credFlag) {
+        Serial.println("Please input credential!!!");
+      }
       if (sensorFlag) {
         Serial.println("Please input sensor name!!!");
-      } else {
+      }
+
+      if (!credFlag && !sensorFlag) {
         Serial.print("Your sensor name is ");
         Serial.println(sensorName);
         if ((WiFi.status() == WL_CONNECTED)) { //Check the current connection status
 
-
           HTTPClient http;
 
           http.begin("http://192.168.137.1:8080/registration"); //Specify the URL
-          int httpCode = http.GET();                                        //Make the request
+          http.addHeader("Content-Type", "text/plain"); //Specify content-type header
+
+          String message = "{\"credential_pass\":\"" + credential + "\"}";
+          String encoded = jwt.encodeJWT(message);;
+          Serial.println(encoded);
+          int httpCode = http.POST(encoded); //Make the request
 
           if (httpCode > 0) { //Check for the returning code
 
             String payload = http.getString();
 
+            String decoded = "";
+            jwt.decodeJWT(payload, decoded);
+
             const size_t capacityReg = JSON_OBJECT_SIZE(2) + 40;
             DynamicJsonBuffer jsonBuffer(capacityReg);
-            JsonObject& rootReg = jsonBuffer.parseObject(payload);
+            JsonObject& rootReg = jsonBuffer.parseObject(decoded);
 
             id = rootReg["id"].as<String>(); // "24_QCDL"
             regTime = rootReg["time"].as<String>(); // "21-04-2020 17:26:46"
@@ -203,7 +224,7 @@ void fsm() {
             }
 
             if (fileToWrite.println("id : " + id + ", " + "registration time : " + regTime + ", " + "sensor name : " + sensorName)) {
-              Serial.println("File was written");;
+              Serial.println("File was written");
             } else {
               Serial.println("File write failed");
             }
@@ -211,6 +232,8 @@ void fsm() {
             state = QUESTION;
           } else {
             state = CONNECT;
+            ssidFlag = true;
+            Serial.println("Not Connected or credential false");
           }
 
           http.end(); //Free the resources
@@ -229,9 +252,12 @@ void fsm() {
 
           String payload = http.getString();
 
+          String decoded = "";
+          jwt.decodeJWT(payload, decoded);
+
           const size_t capacityQue = JSON_OBJECT_SIZE(1) + 20;
           DynamicJsonBuffer jsonBuffer(capacityQue);
-          JsonObject& rootQue = jsonBuffer.parseObject(payload);
+          JsonObject& rootQue = jsonBuffer.parseObject(decoded);
 
           String stat = rootQue["status"].as<String>(); //
 
@@ -259,7 +285,7 @@ void fsm() {
           HTTPClient http;
 
           http.begin("http://192.168.137.1:8080/data"); //Specify the URL
-          http.addHeader("Content-Type", "application/json"); //Specify content-type header
+          http.addHeader("Content-Type", "text/plain"); //Specify content-type header
 
           int minuteInt = minute();
           String minuteStr = String(minuteInt);
@@ -271,26 +297,25 @@ void fsm() {
           String secondStr = String(secondInt);
           if (secondInt < 10)
             secondStr = "0" + secondStr;
-          //          Serial.print("day : ");
-          //          Serial.println(day());
-          //          Serial.print("month : ");
-          //          Serial.println(month());
-          //          Serial.print("year : ");
-          //          Serial.println(year());
+
           String timeNow = String(day()) + "-" + String(month()) + "-" + String(year())  + " " + String(hour()) + ":" + minuteStr + ":" + secondStr;
-          int httpCode = http.POST("{\"id\": \"" + id + "\",\"sensor\": \"" + sensorName + "\",\"value\":  \"" + sensorVal + "\",\"time\": \"" + timeNow + "\"}"); //Make the request
+          String message = "{\"id\":\"" + id + "\",\"sensor\":\"" + sensorName + "\",\"value\": \"" + sensorVal + "\",\"time\":\"" + timeNow + "\"}";
+          String encoded = jwt.encodeJWT(message);
+          int httpCode = http.POST(encoded); //Make the request
 
           if (httpCode > 0) { //Check for the returning code
 
             String payload = http.getString();
+            String decoded = "";
+            jwt.decodeJWT(payload, decoded);
             Serial.println("RESPONSE : ");
             //            Serial.println(httpCode);
-            Serial.println(payload);
+            Serial.println(decoded);
 
             count = count + 1;
             File fileToAppend = SPIFFS.open("/test.txt", FILE_APPEND);
             if (fileToAppend.println(String(count) + ". value : " + String(sensorVal) + ", " + "time : " + timeNow)) {
-              Serial.println("File was written");;
+              Serial.println("File was written");
             } else {
               Serial.println("File write failed");
             }
@@ -318,9 +343,13 @@ void fsm() {
         if (httpCode > 0) { //Check for the returning code
 
           String payload = http.getString();
+
+          String decoded = "";
+          jwt.decodeJWT(payload, decoded);
+
           Serial.println("RESPONSE : ");
           //          Serial.println(httpCode);
-          Serial.println(payload);
+          Serial.println(decoded);
 
           ssidFlag = true;
           passFlag = false;
@@ -348,9 +377,12 @@ void fsm() {
 
           String payload = http.getString();
 
+          String decoded = "";
+          jwt.decodeJWT(payload, decoded);
+
           const size_t capacitySync = JSON_OBJECT_SIZE(2) + 40;
           DynamicJsonBuffer jsonBuffer(capacitySync);
-          JsonObject& root = jsonBuffer.parseObject(payload);
+          JsonObject& root = jsonBuffer.parseObject(decoded);
 
           String timeSync = root["time"].as<String>(); // "21-04-2020 18:47:27"
           int total = root["total"]; // 3
@@ -393,9 +425,12 @@ void fsm() {
 
             String payload = http.getString();
 
+            String decoded = "";
+            jwt.decodeJWT(payload, decoded);
+
             const size_t capacityHis = JSON_OBJECT_SIZE(3) + 60;
             DynamicJsonBuffer jsonBuffer(capacityHis);
-            JsonObject& rootHis = jsonBuffer.parseObject(payload);
+            JsonObject& rootHis = jsonBuffer.parseObject(decoded);
 
             String sensor = rootHis["sensor"]; // "Heat"
             String val = rootHis["value"]; // "23.5"
